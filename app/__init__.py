@@ -1,0 +1,3 @@
+"""
+SentinelCI package initialization.
+"""
