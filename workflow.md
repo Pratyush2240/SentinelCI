@@ -15,7 +15,7 @@ Working mode agreed with Claude: Claude gives one detailed, ready-to-run prompt 
 | 3 | `app/context_processing.py` | Parse Semgrep JSON, build initial + expanded ContextBundle | **DONE (manually verified against real Semgrep output)** |
 | 4 | `app/prompt_builder.py` | Assemble SemgrepFinding + ContextBundle into the LLM prompt string | **DONE (manually verified)** |
 | 5 | `app/llm_client.py` | Gemini Flash adapter → returns LLMAssessment | **DONE (manually verified)** |
-| 6 | `app/decision_engine.py` | Severity × Confidence matrix, override eligibility | Not started |
+| 6 | `app/decision_engine.py` | Severity × Confidence matrix, override eligibility | **DONE (manually verified)** |
 | 7 | `app/main.py` | Wire 1–6 together end-to-end for one PR run | Not started |
 | 8 | `.github/workflows/security-scan.yml` | CI trigger for the whole pipeline | Not started |
 | 9 | Audit Service (FastAPI + Postgres) | Persist findings, separate from the CI workflow | Not started |
@@ -97,4 +97,16 @@ Working mode agreed with Claude: Claude gives one detailed, ready-to-run prompt 
 
 ---
 
-*(Next entry: Step 6, app/decision_engine.py)*
+## Step 6 — `app/decision_engine.py` ✅ DONE (manually verified)
+
+**What it does:** `DECISION_MATRIX` maps the 12 `(Severity, Confidence)` combinations to `(Action, is_override_eligible)` tuples. `get_decision()` retrieves decisions and raises `KeyError` on missing pairs per Decision #8 fail-safe philosophy. `is_override_eligible()` provides a helper for re-evaluating override eligibility at slash-command override time.
+
+**Manual verification performed:**
+- Executed `python -m app.decision_engine` iterating across all 12 `(Severity, Confidence)` combinations.
+- Confirmed visually that only `(Critical, Low)` and `(High, Low)` evaluate to `is_override_eligible = True`.
+- Verified that `is_override_eligible()` helper output matches `get_decision()` across all 12 matrix cells.
+
+---
+
+*(Next entry: Step 7, app/main.py)*
+
