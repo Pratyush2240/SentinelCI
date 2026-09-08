@@ -1,98 +1,145 @@
-# Architecture & Design Decisions Log — SentinelCI
+# SentinelCI — Decision Log
 
-This document tracks all key architectural, technical, and design decisions made throughout the development of SentinelCI. It documents the rationale behind choices, alternative options considered, and the trade-offs evaluated.
+Personal reference doc. Every non-trivial choice made on this project, why it was made, what else was considered, and what would make me reconsider it. Not meant for a recruiter to read — meant so I can defend any part of this cold, without re-deriving it from scratch under pressure.
 
----
-
-## Record of Decisions
-
-### Decision 1: Shared Data Contracts Layer (`app/models.py`) using Pydantic v2
-- **Date**: 2026-08-30
-- **Status**: Accepted
-- **Context**: SentinelCI requires strict data standardizations between static analysis tools (Semgrep), context extractors, LLM reasoning adapters, policy engines, and audit logger modules.
-- **Decision**: Define shared data contracts using **Pydantic v2 (`BaseModel`)** in a standalone file `app/models.py` with `from __future__ import annotations`.
-- **Options Considered**:
-  1. *Python Standard `dataclasses`*: Lightweight, built-in, but lacks built-in type validation, automatic JSON schema generation, and robust serialization/deserialization methods required when interfacing with external CLI tools and LLM JSON APIs.
-  2. *`TypedDict`*: Purely static typing with zero runtime validation or default values.
-  3. *Pydantic v1*: Legacy version; slower execution compared to Pydantic v2's Rust core (`pydantic-core`) and lacks V2's improved field validation and serialization model.
-  4. *Pydantic v2 (`BaseModel`)*: Chosen option. Provides strict runtime validation, high-performance CPython/Rust internals, native JSON schema support, and clean syntax for optional/default fields.
+Format per entry: **Decision → Alternatives considered → Why this one → What would change my mind.**
 
 ---
 
-### Decision 2: Strict Separation of `Severity` and `Confidence` Axes
-- **Date**: 2026-08-30
-- **Status**: Accepted
-- **Context**: Static scanners categorize vulnerability impact, while LLMs evaluate whether a flagged code snippet is a true positive based on surrounding context.
-- **Decision**: Maintain `Severity` (deterministic rule metadata from Semgrep) and `Confidence` (LLM contextual judgment) as two completely independent axes.
-- **Options Considered**:
-  1. *Unified Risk Score (e.g., `Risk = Severity * Confidence`)*: Merges impact and likelihood into a single scalar score.
-  2. *Independent Dual Axis (`Severity` Enum + `Confidence` Enum)*: Chosen option.
-- **Rationale & Trade-offs**:
-  - Combining severity and confidence into a single composite score conceals crucial nuance. For instance, a `CRITICAL` vulnerability (like hardcoded AWS master keys) with `MEDIUM` confidence should not be downgraded to a low-risk score and ignored; it warrants `MANUAL_REVIEW`.
-  - Keeping them separate guarantees that deterministic scanner rules are never muted or overwritten by AI hallucination or misclassification.
+### 1. Two independent GitHub Actions workflows, no standalone server
+
+**Decision:** Security Scan (PR trigger) and Override (issue_comment trigger) are two separate GitHub Actions workflows. No always-on backend server for the core scanning logic — GitHub-hosted runners provide compute per-run.
+
+**Alternatives considered:**
+- A GitHub App with its own hosted webhook listener (persistent server, receives all GitHub events, decides what to do).
+- A single workflow handling both triggers with conditional branching.
+
+**Why this one:** No infrastructure to run/pay for/secure beyond the audit service. GitHub Actions already IS the compute + trigger system. A GitHub App would need its own hosting, its own auth (webhook secret verification), and buys nothing extra for this scope. Two separate workflows (vs. one branching workflow) map cleanly to two genuinely different trigger types and permission needs — cleaner to reason about and secure independently (Security Scan needs `pull_request` read access; Override needs `issue_comment` + ability to check commenter permissions).
+
+**What would change my mind:** If the system needed to react to events outside what GitHub Actions triggers cover (e.g. polling, scheduled cross-repo analysis), a persistent service would become necessary.
 
 ---
 
-### Decision 3: Provider-Agnostic LLM Assessment Contract (`LLMAssessment`)
-- **Date**: 2026-08-30
-- **Status**: Accepted
-- **Context**: The LLM reasoning layer needs to work seamlessly across multiple model providers (e.g., OpenAI, Anthropic, Gemini, local Ollama models) without coupling application logic to a specific provider's API.
-- **Decision**: Require all provider adapters to return a standardized `LLMAssessment` Pydantic model (`confidence`, `category`, `reasoning`, `context_sufficient`).
-- **Options Considered**:
-  1. *Provider-specific output dicts*: Allows models to return arbitrary metadata. High coupling; requires downstreams to handle different schema shapes.
-  2. *Unified `LLMAssessment` contract*: Chosen option.
-- **Rationale**: Shields downstream pipeline stages (Action Engine, Audit Logger) from model vendor changes. Updating or swapping LLM backends requires only writing a new adapter that outputs `LLMAssessment`.
+### 2. Severity and Confidence as independent axes (not one merged score)
+
+**Decision:** Semgrep's Severity (deterministic, from rule metadata) and the LLM's Confidence (contextual judgment) are two separate fields, combined via an explicit 12-cell lookup matrix — not merged into one "risk score."
+
+**Alternatives considered:** A single combined score (e.g. weighted average of severity + confidence) that maps directly to an action.
+
+**Why this one:** They measure fundamentally different things. Severity = cost of being wrong if ignored. Confidence = likelihood the finding is actually real. Merging them into one number destroys information — a High-severity/Low-confidence case and a Medium-severity/Medium-confidence case could produce the same merged score but need completely different handling (the former is exactly the override-eligible case; the latter isn't). This was flagged explicitly as an earlier design mistake before being corrected.
+
+**What would change my mind:** Nothing currently — this is a structural property of the problem, not a tuning choice.
 
 ---
 
-### Decision 4: Two-Pass Dynamic Context Retrieval Architecture
-- **Date**: 2026-08-30
-- **Status**: Accepted
-- **Context**: Semgrep provides line-level matches, but assessing true/false positives often requires context outside the immediate code snippet. However, sending entire repositories on every finding is cost-prohibitive and slow.
-- **Decision**: Implement a two-pass context pipeline controlled by `LLMAssessment.context_sufficient` and `ContextBundle.is_expanded`.
-  - **Pass 1**: Extract localized context (±50 surrounding lines, enclosing function, nearby comments).
-  - **Pass 2 (Conditional)**: If the LLM indicates `context_sufficient=False`, retrieve additional cross-file or project-level context, set `is_expanded=True`, and re-assess.
-- **Options Considered**:
-  1. *Fixed Single-Pass Context*: Always supply fixed ±5 lines or ±50 lines. Misses inter-file dependencies or global configuration contexts.
-  2. *Full Repo Context Always*: Exposes every scan to massive token overhead and API costs.
-  3. *Two-Pass Dynamic Context*: Chosen option. Balances latency, token cost, and accuracy.
+### 3. Override eligibility restricted to Critical/Low and High/Low confidence cells
+
+**Decision:** Of the 12 matrix cells, only 2 allow a human override via slash command: (Critical, Low confidence) and (High, Low-confidence).
+
+**Alternatives considered:**
+- Allow override on any Block Build cell (i.e. also Critical/Medium, Critical/High, High/Medium, High/High).
+- Allow override based on severity alone, ignoring confidence.
+- Allow override based on confidence alone, ignoring severity.
+
+**Why this one:** The general rule — override eligibility is where automated systems disagree under high-risk conditions: severity says "this could be very bad," confidence says "but I'm not sure it's real." That's the ONLY place a human's judgment adds information the system doesn't already have. When severity is high AND confidence is also high/medium (the model itself supports the finding), overriding would mean bypassing a well-supported security gate on human say-so alone — not what this system is for. When severity is low/medium, there's no need for a formal override process at all; normal review or informational reporting is enough (Build Pass / Manual Review already handle it, per the matrix). It is the CONJUNCTION of high severity + low confidence that matters, not either alone.
+
+**What would change my mind:** Real audit data showing the Medium-confidence threshold is miscalibrated (see #4 below) — that would move which cells are "Low" in the first place, not the eligibility rule itself.
 
 ---
 
-### Decision 5: Explicit Pipeline Action Policy Enum (`Action`)
-- **Date**: 2026-08-30
-- **Status**: Accepted
-- **Context**: CI/CD security tools need deterministic actions to govern build pipelines (blocking PR merges, requesting review, or allowing pass).
-- **Decision**: Define an explicit `Action` enum (`BLOCK_BUILD`, `MANUAL_REVIEW`, `BUILD_PASS`).
-- **Options Considered**:
-  1. *Boolean Pass/Fail*: Too simplistic; cannot differentiate between clean code and findings requiring human verification.
-  2. *Tri-State `Action` Enum*: Chosen option. Enables nuanced CI workflows (e.g. automatic blocking for High Severity + High Confidence, manual review for High Severity + Medium Confidence).
+### 4. Medium confidence = no override (gate stays strict), and this threshold is tunable policy
+
+**Decision:** At High or Critical severity, Medium confidence still means Block Build with no override — only Low confidence unlocks override eligibility.
+
+**Alternatives considered:** Loosen the line so Medium confidence is also override-eligible.
+
+**Why this one:** Low confidence means the LLM lacks sufficient evidence to judge — genuine uncertainty. Medium confidence means the LLM has enough contextual evidence to support Semgrep's finding, even with some residual uncertainty — the combined evidence (deterministic scanner + contextual reasoning, both pointing the same way) is treated as sufficient to enforce the gate. This is explicitly a POLICY decision, not a hardcoded assumption — for the MVP, "Medium is sufficient" balances security against developer productivity. If audit data later shows Medium-confidence findings are frequently overridden or turn out to be false positives, this threshold should move. The matrix is a configurable risk policy, not a law of nature.
+
+**What would change my mind:** Audit-service data showing Medium-confidence findings have a high false-positive rate in practice.
 
 ---
 
-### Decision 6: Local Git Checkout Syscalls vs GitHub REST/GraphQL API Calls (`app/git_ops.py`)
-- **Date**: 2026-08-30
-- **Status**: Accepted
-- **Context**: SentinelCI needs to read file contents, extract line ranges around flagged findings, run git blame, and inspect diffs during CI pipeline execution.
-- **Decision**: Perform all file reading, line extraction, git blame, and diff operations directly on the local Git checkout cloned by GitHub Actions onto the runner (`pathlib.Path` & `subprocess.run`), avoiding GitHub API calls.
-- **Options Considered**:
-  1. *GitHub REST / GraphQL API Requests*: Fetch file contents, git blame, and PR diffs over HTTP using GitHub's REST/GraphQL APIs (e.g., PyGithub, Octokit).
-  2. *Local Git Checkout Syscalls (`app/git_ops.py`)*: Chosen option.
-- **Rationale & Trade-offs**:
-  - **Latency**: Local disk reads (`read_text`) and local `git blame` subprocess calls execute in sub-milliseconds to milliseconds, compared to 100–500ms network latency per API request.
-  - **Rate Limits**: GitHub API calls are subject to strict rate limits (e.g., 1,000 to 5,000 requests/hour per `GITHUB_TOKEN`). High-volume CI scans on large PRs can easily exhaust API quotas.
-  - **Simplicity**: No need for network authentication, API retries, or secret management inside context retrieval modules.
+### 5. LLM provider: Gemini Flash (Google AI Studio free tier)
+
+**Decision:** Use Gemini Flash via the free tier for both LLM call sites (initial judgment + expanded-context judgment).
+
+**Alternatives considered:**
+- Claude (Anthropic API) — rejected for now: not actually free, requires paid billing even at the cheapest tier (Haiku). Initially considered under a mistaken assumption that Haiku was free — corrected mid-decision.
+- GPT-4o-mini / other paid-but-cheap APIs — same free-tier constraint issue.
+- Groq (free tier, open-weight models) — viable alternative not yet evaluated in depth.
+
+**Why this one:** Derived from explicit requirements first, provider second: (1) reliable structured/JSON output for programmatic parsing by the Decision Engine, (2) strong-enough contextual reasoning to distinguish test vs. prod secrets, (3) large enough context window for the expanded-context call (multiple files, imports, diffs), (4) low latency — this blocks a CI pipeline, (5) cost — for a personal/student project, "genuinely free" is a hard constraint, not just "cheap," (6) stable production-ready API. Gemini Flash's free tier satisfies all of these; it was chosen against the requirements list, not chosen first and rationalized after.
+
+**Honest tradeoff accepted:** A free/smaller model likely makes more mistakes on hard context-dependent judgment calls (e.g. a dummy credential spread across multiple config files) than a larger paid model (GPT-4/Claude Sonnet+). Accepted because the primary goal is demonstrating the architecture and reasoning pipeline, not maximizing detection accuracy at any cost. This is why the LLM Client is isolated behind the `LLMAssessment` contract in models.py/llm_client.py — swapping providers later means writing one new adapter class, not touching the Decision Engine or anything downstream.
+
+**Caveat — this claim is currently ASPIRATIONAL, not proven:** The model-agnostic design is structurally true (nothing downstream imports Gemini-specific types), but has not actually been tested by swapping in a second provider. Don't claim this as an already-validated property until that's actually been done once.
+
+**What would change my mind:** An actual evaluation (see #7, test-set construction) showing Gemini Flash's false-positive/false-negative rate is unacceptably high on realistic cases — at that point, swapping to a paid model becomes justified by evidence, not just "paid is probably better."
 
 ---
 
-### Decision 7: Sibling File Discovery (`find_related_files`) as a Temporary Placeholder Heuristic
-- **Date**: 2026-08-30
-- **Status**: Temporary Heuristic (Not Final Design Decision)
-- **Context**: When an LLM requires expanded context (`context_sufficient=False`), SentinelCI must discover related project files to enrich the `ContextBundle`.
-- **Decision**: Implement `find_related_files` using a lightweight sibling file heuristic (up to 5 files in the same directory) and explicitly document it as a temporary placeholder.
-- **Options Considered**:
-  1. *AST / Language Import Graph Analysis*: Parse import trees (Python AST, TS Compiler API) to discover true cross-file dependencies.
-  2. *Git Co-Commit Analysis*: Query `git log` history to identify files frequently committed together.
-  3. *Same-Directory Sibling Heuristic*: Chosen placeholder option.
-- **Rationale**: Enables building and validating the dynamic context expansion pipeline early without blocking on language-specific AST parser integrations.
+### 6. One Python process with internal modules, not separate microservices
 
+**Decision:** Git Operations, Context Processing, Prompt Builder, LLM Client, and Decision Engine are modules/functions within a single Python application that runs as one step inside the GitHub Actions job — not independently deployed services communicating over a network.
+
+**Alternatives considered:** Splitting these into separate services (e.g. each behind its own REST API), which is what an earlier draft of the stack table implied by listing "Python" three times as if they were separate components.
+
+**Why this one:** These modules are tightly coupled and always execute together, sequentially, within a single GitHub Actions run. Splitting them into microservices would require inter-service auth, network calls, separate deployment, and error handling across service boundaries — real architectural cost with zero benefit at this scale. The component boundary that actually matters here is "the Python application" as a whole; Git Operations / Context Processing / Prompt Builder are internal responsibilities within it, not architectural components in their own right.
+
+**What would change my mind:** If the project scaled to support multiple scanners running in parallel, or needed independent scaling of one stage (e.g. LLM calls becoming a bottleneck across many repos), extracting specific modules into real services would become justified.
+
+---
+
+### 7. Audit Service auth: API key for MVP, GitHub OIDC for production
+
+**Decision:** The workflow authenticates to the external Audit Service using a static API key stored in GitHub Secrets, for the MVP. Production deployment would switch to GitHub OIDC (short-lived, signed JWT per workflow run, verified against GitHub's public keys — no long-lived secret to steal).
+
+**Alternatives considered:** Using OIDC from the start.
+
+**Why API key for MVP (not just "it's simpler"):** Verified GitHub's actual default behavior first, rather than assuming: workflows triggered by `pull_request` (not `pull_request_target`) do NOT expose repository secrets to runs originating from fork PRs, by default. This mitigates the highest-risk scenario (a malicious fork PR exfiltrating the audit API key). Combined with least-privilege scoping of the key (it can only write to the audit service, nothing else), the residual risk was evaluated as acceptable for a prototype whose goal is validating the reasoning pipeline, not hardening production auth. This is a scoped, risk-evaluated decision — not "easier to build" as a first instinct.
+
+**Explicit gate on trigger type:** If the workflow trigger is ever changed to `pull_request_target` (sometimes done to get write permissions or secrets access on fork PRs), this entire risk analysis is invalidated and OIDC becomes mandatory, not optional. Noted directly in the workflow YAML comment so this isn't silently forgotten later.
+
+**What would change my mind:** Any production deployment, or any change to the trigger type. OIDC removes the long-lived-secret risk category entirely and is the correct answer once complexity is justified by real stakes.
+
+---
+
+### 8. Fail-safe (not fail-open) on malformed LLM responses
+
+**Decision:** If the LLM's response can't be parsed into a valid `LLMAssessment` (bad JSON, missing fields, invalid enum value), the system defaults to `Confidence.LOW` rather than silently dropping the finding or defaulting to a "safe-looking" high confidence.
+
+**Alternatives considered:** Retry the LLM call; default to Medium confidence; fail the whole workflow run.
+
+**Why this one:** A malformed response must never silently become "Build Pass" — that would mean a parsing bug quietly disables the security gate. Defaulting to Low confidence means: at High/Critical severity, it still routes to at least Manual Review (or stays Block Build, per the matrix) — the system fails toward more human scrutiny, not less, when it doesn't understand its own LLM's output.
+
+**Open question, not yet resolved:** Whether "assume worst case on parse failure" is actually right in practice, or whether it'll prove too noisy (e.g. if Gemini's free tier has a non-trivial malformed-response rate, this could flood Manual Review with parse failures rather than real findings). Flagged in `llm_client.py` as something to revisit once there's real failure data.
+
+**What would change my mind:** Observed parse-failure rate in practice, once the system is actually run against real PRs.
+
+---
+
+### 9. Shared Data Contracts (`app/models.py`) using Pydantic v2
+
+**Decision:** Shared data contracts are defined in `app/models.py` using Pydantic v2 (`BaseModel`) and Python enums (`Severity`, `Confidence`, `Action`).
+
+**Alternatives considered:** Python standard `dataclasses`, `TypedDict`, Pydantic v1.
+
+**Why this one:** Provides strict runtime validation, high-performance CPython/Rust internals, native JSON schema support, and clean syntax for optional/default fields.
+
+**What would change my mind:** Nothing currently — Pydantic v2 is the standard for typed Python data contracts.
+
+---
+
+### 10. Flagged code read directly from git checkout (`pad=0`), bypassing Semgrep's "requires login" JSON truncation
+
+**Decision:** `build_initial_context` reads the actual flagged code snippet directly from the local repository using `GitOps.read_lines_around(file_path, start_line, end_line, pad=0)` instead of relying on `finding.matched_code` from Semgrep's `--json` output.
+
+**Alternatives considered:** Trusting Semgrep's `matched_code` / `extra.lines` field directly.
+
+**Why this one:** Testing against real Semgrep OSS CLI output revealed that community/registry rules omit actual matched lines for unauthenticated scans, returning the literal string `"requires login"`. Relying on `matched_code` would silently pass `"requires login"` into the LLM prompt, degrading the core value proposition of contextual code analysis.
+
+**What would change my mind:** If Semgrep OSS guaranteed un-truncated snippet extraction for all rules in unauthenticated mode in a future CLI release.
+
+---
+
+*(This file is appended to after each build step — not a one-time document.)*

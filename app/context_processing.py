@@ -101,9 +101,18 @@ def build_initial_context(
         pad=50,
     )
 
+    # Semgrep's matched_code field is unreliable for unauthenticated/free-tier
+    # Semgrep OSS scans (some rules return "requires login" instead of the real
+    # snippet), so the flagged code is read independently from the local checkout
+    # via GitOps rather than trusted from Semgrep's JSON output. This makes the
+    # pipeline correct regardless of the scanning account's login/tier status.
+    actual_flagged_code = git_ops.read_lines_around(
+        finding.file_path, finding.start_line, finding.end_line, pad=0
+    )
+
     return ContextBundle(
         file_path=finding.file_path,
-        flagged_code=finding.matched_code,
+        flagged_code=actual_flagged_code,
         surrounding_lines=surrounding_lines,
         # TODO: Extracting the enclosing function reliably across languages
         # needs a real parser (e.g. tree-sitter).  Deliberately left unset

@@ -1,86 +1,100 @@
-# SentinelCI Workflow & Pipeline Specification
+# SentinelCI — Build Workflow Log
 
-SentinelCI is an intelligent CI/CD security scanner that pairs deterministic static analysis (Semgrep) with an LLM reasoning engine to drastically minimize false positives in automated code reviews.
+Tracks: what's been built, in what order, which steps were done via an Antigravity prompt vs. manually, and what's next. Update after every step.
 
-This document details the end-to-end data flow, execution pipeline, and component interactions across SentinelCI.
-
----
-
-## High-Level Architecture Diagram
-
-```mermaid
-flowchart TD
-    A[Repository / Pull Request] -->|1. Trigger Scan| B[Semgrep Engine]
-    B -->|2. Raw JSON Output| C[Semgrep Finding Parser]
-    C -->|3. SemgrepFinding| D[Context Processor]
-    D -->|4. ContextBundle ±50 lines| E[LLM Reasoning Layer Adapter]
-    E -->|5. Initial Assessment| F{Context Sufficient?}
-    F -->|No: context_sufficient=False| G[Expanded Context Fetcher]
-    G -->|Update ContextBundle is_expanded=True| E
-    F -->|Yes: context_sufficient=True| H[LLMAssessment]
-    H --> I[Action Engine Policy]
-    I -->|6. Action Selection| J[Finding Audit Logger]
-    J -->|7. Persist Finding| K[Audit Log / GitHub PR Status]
-```
+Working mode agreed with Claude: Claude gives one detailed, ready-to-run prompt per file/step. Pratyush runs it in Antigravity, reviews the output, confirms it's done, then moves to the next step. Claude flags anywhere a manual action (not a prompt) is faster/more appropriate — e.g. creating a GitHub secret, signing up for an API key — rather than burning a prompt on something that isn't really a coding task.
 
 ---
 
-## Detailed Pipeline Execution Steps
+## Build order (bottom-up, each step depends only on prior ones)
 
-### 1. Semgrep Static Analysis Pass
-- **Input**: Source code repository, PR diff, or target branch.
-- **Process**: Executes Semgrep CLI (`semgrep --json`) configured with targeted security rules.
-- **Output**: JSON payload containing raw findings.
-- **Data Contract**: Parsed into `SemgrepFinding` objects (`rule_id`, `file_path`, `start_line`, `end_line`, `severity`, `message`, `matched_code`).
+| # | File | Purpose | Status |
+|---|---|---|---|
+| 1 | `app/models.py` | Shared data contracts (SemgrepFinding, ContextBundle, LLMAssessment, Finding, enums) | **DONE** |
+| 2 | `app/git_ops.py` | Read local checkout: file contents, ±N lines, blame, related files | **DONE (manually verified)** |
+| 3 | `app/context_processing.py` | Parse Semgrep JSON, build initial + expanded ContextBundle | **DONE (manually verified against real Semgrep output)** |
+| 4 | `app/prompt_builder.py` | Assemble SemgrepFinding + ContextBundle into the LLM prompt string | **DONE (manually verified)** |
+| 5 | `app/llm_client.py` | Gemini Flash adapter → returns LLMAssessment | **DONE (manually verified)** |
+| 6 | `app/decision_engine.py` | Severity × Confidence matrix, override eligibility | Not started |
+| 7 | `app/main.py` | Wire 1–6 together end-to-end for one PR run | Not started |
+| 8 | `.github/workflows/security-scan.yml` | CI trigger for the whole pipeline | Not started |
+| 9 | Audit Service (FastAPI + Postgres) | Persist findings, separate from the CI workflow | Not started |
+| 10 | Override workflow (`issue_comment` trigger) | Slash-command override, two independent checks | Not started |
+| 11 | Test-set construction + evaluation | Real evidence for resume claims — see decisions.md #5 caveat | Not started |
 
-### 2. Context Extraction & Bundle Creation (`app/git_ops.py`)
-- **Input**: Target source file and `SemgrepFinding`.
-- **Process**:
-  - `GitOps.read_file()` reads source file locally from runner disk using UTF-8 (`errors="replace"`).
-  - `GitOps.read_lines_around()` extracts ±50 surrounding lines using 1-indexed to 0-indexed bounded line clamping.
-  - `GitOps.blame()` runs local `git blame` subprocess for commit context.
-  - Identifies enclosing function name (`enclosing_function`) and collects nearby comments.
-- **Data Contract**: `ContextBundle` (`file_path`, `flagged_code`, `surrounding_lines`, `enclosing_function`, `nearby_comments`, `is_expanded=False`, `expanded_files=[]`).
-
-### 3. LLM Reasoning Pass (Provider Adapter)
-- **Input**: `SemgrepFinding` + `ContextBundle`.
-- **Process**:
-  - Formats prompt for LLM provider (OpenAI, Anthropic, Gemini, etc.).
-  - Evaluates code logic, data flow, variable sanitization, and surrounding context.
-  - Determines confidence level and vulnerability category.
-- **Data Contract**: `LLMAssessment` (`confidence`, `category`, `reasoning`, `context_sufficient`).
-
-### 4. Dynamic Context Expansion Pass (Conditional) (`app/git_ops.py`)
-- **Trigger**: `LLMAssessment.context_sufficient == False`.
-- **Process**:
-  - `GitOps.find_related_files()` discovers sibling files or import references.
-  - `GitOps.diff_against_base()` retrieves raw git diff against base branch for change context.
-  - Updates `ContextBundle`: sets `is_expanded = True` and appends filenames to `expanded_files`.
-  - Re-executes LLM reasoning pass with enriched context.
-
-
-### 5. Action Engine Policy Triaging
-- **Input**: `SemgrepFinding.severity` + `LLMAssessment.confidence`.
-- **Process**: Evaluates finding against policy matrix:
-  - **`BLOCK_BUILD`**: e.g., CRITICAL / HIGH severity + HIGH confidence.
-  - **`MANUAL_REVIEW`**: e.g., HIGH / MEDIUM severity + MEDIUM confidence or context uncertainty.
-  - **`BUILD_PASS`**: e.g., False positives (LOW confidence) or LOW severity findings that fail safety thresholds.
-- **Data Contract**: Returns `Action` enum.
-
-### 6. Audit Logging & Notification
-- **Input**: `SemgrepFinding`, `ContextBundle`, `LLMAssessment`, `Action`, metadata (`repo`, `pr_number`, `head_sha`).
-- **Process**: Assembles complete `Finding` record, assigns `finding_id`, and writes to persistent audit log/database and updates GitHub PR checks.
+**Manual (non-prompt) actions needed at some point, not yet done:**
+- Create a GitHub repo for this project (if not already done) — trivial, don't burn a prompt on it.
+- Sign up for Google AI Studio, generate a Gemini API key, add it as `GEMINI_API_KEY` in GitHub Secrets.
+- Decide on and sign up for the audit DB host (Supabase or Neon) — comparing the two free tiers is a 10-minute manual task, not something to prompt-generate.
+- Add `SENTINELCI_AUDIT_API_KEY` and `SENTINELCI_AUDIT_URL` to GitHub Secrets once the audit service exists (step 9).
 
 ---
 
-## Data Model Interconnections
+## Step 1 — `app/models.py` ✅ DONE
 
-| Model Name | Role in Workflow |
-| :--- | :--- |
-| **`Severity`** | Deterministic static severity from Semgrep rule metadata (never modified by LLM). |
-| **`Confidence`** | Independent AI assessment axis indicating confidence in true-positive status. |
-| **`Action`** | Pipeline decision outcome (`BLOCK_BUILD`, `MANUAL_REVIEW`, `BUILD_PASS`). |
-| **`SemgrepFinding`** | Contract for raw Semgrep JSON parsing output. |
-| **`ContextBundle`** | Provider-agnostic payload containing code surroundings and expansion tracking. |
-| **`LLMAssessment`** | Standardized response structure from any LLM provider adapter. |
-| **`Finding`** | Complete persistent audit record combining finding, context, AI assessment, and action. |
+**What it does:** Defines `Severity`, `Confidence`, `Action` enums and `SemgrepFinding`, `ContextBundle`, `LLMAssessment`, `Finding` Pydantic models — the shared contract every other module imports.
+
+**Why this is step 1:** Every other module (`git_ops`, `context_processing`, `prompt_builder`, `llm_client`, `decision_engine`) either consumes or produces one of these types. Building it first means every later step has a concrete target shape to fill in, rather than inventing ad-hoc dicts that would need to be reconciled later.
+
+**Issues caught in review:**
+1. **Enum casing mismatch (real bug, fix deferred to Step 5):** enums use uppercase values (`"HIGH"`), but the LLM prompt schema requests lowercase. Fix lives in `llm_client.py` via `.upper()` normalization on parse — not in `models.py` itself.
+2. **Docstring ordering (cosmetic):** `from __future__ import annotations` was placed before the module docstring in the first draft, so it wasn't actually assigned to `__doc__`. Low priority fix.
+
+**File ownership note:** Antigravity also generates its own `Decision.md` / `workflow.md` with implementation-level notes. Reconciliation of the two sets of docs is explicitly deferred to the end of the build (Pratyush's call) — flagged as a real cost to pay later, not resolved yet.
+
+---
+
+## Step 2 — `app/git_ops.py` ✅ DONE (manually verified)
+
+**What it does:** `read_file`, `read_lines_around`, `blame`, `diff_against_base`, `find_related_files` — all operate on the local git checkout, no GitHub API calls.
+
+**Manual verification performed (not just code review):**
+- `read_file`: confirmed real file content returned.
+- `read_lines_around`: confirmed by manually counting lines in the actual file — pad/clamp math (`lo = start-1-pad`, `hi = end+pad`) is correct, no off-by-one.
+- `blame`: confirmed real commit hash/author/timestamp returned once repo had at least one commit.
+- `diff_against_base`: initially looked broken (empty output on two test SHAs), but root-caused correctly — the file being diffed (`models.py`) genuinely hadn't changed between those two commits (the only change was removing an accidentally-committed `__pycache__` folder). Empty diff was the correct result, not a bug. Not yet tested against a commit that actually modifies `models.py` — worth doing once there's a reason to.
+- `find_related_files`: confirmed real sibling files listed.
+
+**Process note:** `__pycache__/` was accidentally committed to the repo. Fixed via `.gitignore` + `git rm -r --cached`. Should be gitignored from commit #1 on any future Python project.
+
+---
+
+## Step 3 — `app/context_processing.py` ✅ DONE (manually verified against real Semgrep output)
+
+**What it does:** `parse_semgrep_results` turns raw `semgrep --json` output into `SemgrepFinding` objects. `build_initial_context` and `expand_context` build the always-run and conditional-expansion `ContextBundle`s.
+
+**Manual verification performed:**
+- Installed Semgrep, ran real scans against a test file with a planted fake AWS key.
+- First attempt (`AKIAIOSFODNN7EXAMPLE`, AWS's official docs example key) produced 0 findings — root-caused to secret-scanners commonly denylisting well-known example/placeholder credentials specifically to avoid flagging documentation. Switched to a non-well-known fake key in the same format; got 2 real findings.
+- Ran `parse_semgrep_results` against the real `semgrep-results.json`: no crash, correct field mapping (file path, line numbers, severity all correct) — confirms the JSON-shape assumptions in the parser hold against actual Semgrep output, not just a guessed schema.
+
+**Real bug caught via this testing (not found by code review):** Semgrep OSS's community/registry rules return the literal string `"requires login"` in the lines field (`→ matched_code`) for many rules, gating the actual matched snippet behind a paid/logged-in tier. This would have silently fed `"requires login"` into the LLM prompt as the "flagged code" — degrading the core value proposition (contextual reasoning about the ACTUAL flagged code, per architecture.md §2) to reasoning about a placeholder string, for any rule that gates snippets this way.
+
+**Fix:** `build_initial_context` no longer trusts `finding.matched_code` from Semgrep's JSON at all. Instead it calls `git_ops.read_lines_around(finding.file_path, finding.start_line, finding.end_line, pad=0)` to read the actual flagged line(s) directly from the local checkout — independent of Semgrep's account tier or licensing. Verified: `ctx.flagged_code` now shows the real code, not the placeholder.
+
+**Why this is a good decisions.md entry, not just a bugfix note:** this is exactly the kind of thing that only surfaces when you test against a real tool's real output rather than an assumed schema — logged as decision #10.
+
+---
+
+## Step 4 — `app/prompt_builder.py` ✅ DONE (manually verified)
+
+**What it does:** `build_prompt` assembles a `SemgrepFinding` and a `ContextBundle` into the exact prompt string sent to Gemini API, including task framing, severity-independence instruction, flagged code from source, surrounding lines, context-sufficiency evaluation rules, and `RESPONSE_SCHEMA_INSTRUCTIONS`.
+
+**Manual verification performed:**
+- Executed `python -m app.prompt_builder` with sample test data (`SemgrepFinding` + `ContextBundle`).
+- Verified prompt output format: task framing correctly ordered, severity independence explicitly instructed, flagged code read from local source snippet, `RESPONSE_SCHEMA_INSTRUCTIONS` properly appended.
+
+---
+
+## Step 5 — `app/llm_client.py` ✅ DONE (manually verified)
+
+**What it does:** `get_llm_assessment` passes `finding` and `context` to `build_prompt()`, queries Gemini API (`gemini-3.6-flash`), normalizes lowercase confidence values to uppercase in raw JSON dict before constructing `LLMAssessment`, and enforces Decision #8 fail-safe error handling (`Confidence.LOW`, `category="parse_error"`) on malformed responses.
+
+**Manual verification performed:**
+- Tested against live Gemini API using real credentials from `.env`.
+- Executed `python -m app.llm_client`: API call succeeded on normal path, raw lowercase `"medium"` confidence correctly uppercased to `<Confidence.MEDIUM: 'MEDIUM'>`.
+- Executed parse failure fallback tests: `json.JSONDecodeError` and `ValidationError` properly caught and fallback `LLMAssessment` returned with `Confidence.LOW`.
+
+---
+
+*(Next entry: Step 6, app/decision_engine.py)*
