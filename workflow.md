@@ -17,7 +17,8 @@ Working mode agreed with Claude: Claude gives one detailed, ready-to-run prompt 
 | 5 | `app/llm_client.py` | Gemini Flash adapter → returns LLMAssessment | **DONE (manually verified)** |
 | 6 | `app/decision_engine.py` | Severity × Confidence matrix, override eligibility | **DONE (manually verified)** |
 | 7 | `app/main.py` | Wire 1–6 together end-to-end for one PR run | **DONE (manually verified)** |
-| 8 | `.github/workflows/security-scan.yml` | CI trigger for the whole pipeline | Not started |
+| 8 | `.github/workflows/security-scan.yml` | CI trigger for the whole pipeline | **DONE (manually verified)** |
+
 | 9 | Audit Service (FastAPI + Postgres) | Persist findings, separate from the CI workflow | Not started |
 | 10 | Override workflow (`issue_comment` trigger) | Slash-command override, two independent checks | Not started |
 | 11 | Test-set construction + evaluation | Real evidence for resume claims — see decisions.md #5 caveat | Not started |
@@ -122,6 +123,18 @@ Working mode agreed with Claude: Claude gives one detailed, ready-to-run prompt 
 
 ---
 
-*(Next entry: Step 8, .github/workflows/security-scan.yml)*
+## Step 8 — `.github/workflows/security-scan.yml` ✅ DONE (manually verified)
+
+**What it does:** Configures GitHub Actions workflow triggering on `pull_request` (`opened`, `synchronize`). Runs a single `ubuntu-latest` job with full checkout history (`fetch-depth: 0`), sets up Python 3.13, installs dependencies from `requirements.txt` (including `semgrep>=1.0.0`), and runs `python -m app.main` with `PR_BASE_SHA` and `GEMINI_API_KEY` explicitly set.
+
+**Manual verification performed:**
+- Updated `requirements.txt` to include `semgrep>=1.0.0`.
+- Renamed `GITHUB_BASE_REF` to `PR_BASE_SHA` in `app/main.py` and updated `run_local.ps1`.
+- Verified local PowerShell execution of `run_local.ps1` runs end-to-end successfully.
+
+---
+
+*(Next entry: Step 9, Audit Service (FastAPI + Postgres))*
+
 
 

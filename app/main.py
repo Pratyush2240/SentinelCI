@@ -84,7 +84,8 @@ def main() -> None:
     # Unconditional reading of GitHub Actions environment variables
     github_event_path = os.environ["GITHUB_EVENT_PATH"]
     github_sha = os.environ["GITHUB_SHA"]
-    github_base_ref = os.environ["GITHUB_BASE_REF"]
+    # PR_BASE_SHA is set explicitly by the CI workflow from github.event.pull_request.base.sha — GitHub does not expose this as a default env var (unlike GITHUB_EVENT_PATH and GITHUB_SHA, which the Actions runner sets automatically).
+    pr_base_sha = os.environ["PR_BASE_SHA"]
 
     # Load GitHub PR event JSON payload
     with open(github_event_path, "r", encoding="utf-8") as f:
@@ -94,14 +95,11 @@ def main() -> None:
     pr_number = event_data.get("number") or event_data.get("pull_request", {}).get("number", 0)
 
     print(f"=== SentinelCI Security Scan ===")
-    print(f"Repository: {repo_name} | PR #{pr_number} | Commit: {github_sha[:7]} | Base: {github_base_ref}")
+    print(f"Repository: {repo_name} | PR #{pr_number} | Commit: {github_sha[:7]} | Base: {pr_base_sha}")
 
     git_ops = GitOps(repo_root=".")
 
-    # NOTE: Using github_base_ref (base branch name like "main") rather than a precise base SHA
-    # is a known simplification for now, and may need revisiting once the real GitHub Actions
-    # checkout behavior (fetch depth, detached HEAD state) is tested in Step 8's actual CI environment.
-    changed_files = git_ops.get_changed_files(github_base_ref)
+    changed_files = git_ops.get_changed_files(pr_base_sha)
 
     # 1. Run Semgrep on changed files and parse raw findings
     semgrep_json_path = run_semgrep_scan(changed_files, "output/semgrep_results.json")
