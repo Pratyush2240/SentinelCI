@@ -46,7 +46,7 @@ Working mode agreed with Claude: Claude gives one detailed, ready-to-run prompt 
 
 ## Step 2 — `app/git_ops.py` ✅ DONE (manually verified)
 
-**What it does:** `read_file`, `read_lines_around`, `blame`, `diff_against_base`, `find_related_files` — all operate on the local git checkout, no GitHub API calls.
+**What it does:** `read_file`, `read_lines_around`, `blame`, `diff_against_base`, `find_related_files`, `get_changed_files` — all operate on the local git checkout, no GitHub API calls. `get_changed_files` identifies files modified in the PR relative to the target base branch (`origin/{base_ref}...HEAD`), enabling diff-scoped scanning.
 
 **Manual verification performed (not just code review):**
 - `read_file`: confirmed real file content returned.
@@ -54,6 +54,7 @@ Working mode agreed with Claude: Claude gives one detailed, ready-to-run prompt 
 - `blame`: confirmed real commit hash/author/timestamp returned once repo had at least one commit.
 - `diff_against_base`: initially looked broken (empty output on two test SHAs), but root-caused correctly — the file being diffed (`models.py`) genuinely hadn't changed between those two commits (the only change was removing an accidentally-committed `__pycache__` folder). Empty diff was the correct result, not a bug. Not yet tested against a commit that actually modifies `models.py` — worth doing once there's a reason to.
 - `find_related_files`: confirmed real sibling files listed.
+- `get_changed_files`: verified git diff execution outputting list of modified files for PR-scoped Semgrep runs.
 
 **Process note:** `__pycache__/` was accidentally committed to the repo. Fixed via `.gitignore` + `git rm -r --cached`. Should be gitignored from commit #1 on any future Python project.
 
@@ -78,11 +79,12 @@ Working mode agreed with Claude: Claude gives one detailed, ready-to-run prompt 
 
 ## Step 4 — `app/prompt_builder.py` ✅ DONE (manually verified)
 
-**What it does:** `build_prompt` assembles a `SemgrepFinding` and a `ContextBundle` into the exact prompt string sent to Gemini API, including task framing, severity-independence instruction, flagged code from source, surrounding lines, context-sufficiency evaluation rules, and `RESPONSE_SCHEMA_INSTRUCTIONS`.
+**What it does:** `build_prompt` assembles a `SemgrepFinding` and a `ContextBundle` into the exact prompt string sent to Gemini API, including task framing, severity-independence instruction, flagged code from source, surrounding lines, context-sufficiency evaluation rules, and `RESPONSE_SCHEMA_INSTRUCTIONS`. Prompts explicitly clarify that `confidence` measures probability of genuine security risk (not model self-certainty in reasoning).
 
 **Manual verification performed:**
 - Executed `python -m app.prompt_builder` with sample test data (`SemgrepFinding` + `ContextBundle`).
 - Verified prompt output format: task framing correctly ordered, severity independence explicitly instructed, flagged code read from local source snippet, `RESPONSE_SCHEMA_INSTRUCTIONS` properly appended.
+- Verified clarification text guiding the model that false positive test fixtures/mocks must yield `LOW` confidence.
 
 ---
 
@@ -110,12 +112,13 @@ Working mode agreed with Claude: Claude gives one detailed, ready-to-run prompt 
 
 ## Step 7 — `app/main.py` ✅ DONE (manually verified)
 
-**What it does:** Orchestrates the end-to-end SentinelCI pipeline run. Reads GitHub Actions environment variables (`GITHUB_EVENT_PATH`, `GITHUB_SHA`, `GITHUB_BASE_REF`), executes Semgrep CLI, extracts context, queries LLM reasoning adapter with single-retry context expansion cap when `context_sufficient=False`, evaluates policy decisions via `decision_engine`, enforces per-finding failure isolation (`try/except`), prints human-readable stdout summary, and outputs structured results to `./output/sentinelci_results.json`.
+**What it does:** Orchestrates the end-to-end SentinelCI pipeline run. Reads GitHub Actions environment variables (`GITHUB_EVENT_PATH`, `GITHUB_SHA`, `GITHUB_BASE_REF`), uses `GitOps.get_changed_files()` for diff-scoped scanning, executes Semgrep CLI, extracts context, queries LLM reasoning adapter with single-retry context expansion cap when `context_sufficient=False`, evaluates policy decisions via `decision_engine`, enforces per-finding failure isolation (`try/except`), prints human-readable stdout summary, and outputs structured results to `./output/sentinelci_results.json`.
 
 **Manual verification performed:**
 - Created `test_fixtures/fake_pr_event.json` and updated `.gitignore` with `output/`.
 - Executed `python -m app.main` with `GITHUB_EVENT_PATH="test_fixtures/fake_pr_event.json"`, `GITHUB_SHA="0ce651a"`, and `GITHUB_BASE_REF="main"`.
 - Verified stdout table summary printed correctly and `output/sentinelci_results.json` was created containing full structured result.
+- Verified per-finding failure isolation produces fallback error records when an individual finding processing step fails.
 
 ---
 

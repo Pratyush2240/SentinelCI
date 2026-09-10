@@ -142,4 +142,53 @@ Format per entry: **Decision → Alternatives considered → Why this one → Wh
 
 ---
 
+### 11. Diff-scoped Semgrep scanning for PR CI runs (`git_ops.get_changed_files`)
+
+**Decision:** The main pipeline runs Semgrep strictly on files modified in the PR (`git diff --name-only origin/{base_ref}...HEAD`), rather than scanning the entire repository tree.
+
+**Alternatives considered:** Scan the full codebase on every PR run.
+
+**Why this one:** PR security checks should evaluate changes introduced by the PR. Full-repo scanning adds unnecessary runtime overhead to CI runs and risks blocking PRs due to pre-existing legacy issues outside the PR's scope. 
+
+**What would change my mind:** If cross-file structural or architectural rules are added that require full-codebase context during static scanning, or if security policy requires full repository regression scans on every PR.
+
+---
+
+### 12. Per-finding failure isolation in pipeline orchestration (`app/main.py`)
+
+**Decision:** Processing for each Semgrep finding inside `main.py` is wrapped in an isolated `try/except` block. If processing one finding raises an exception (e.g. LLM rate limit, git error, parse failure), it creates a fallback error result record and allows processing of remaining findings to continue.
+
+**Alternatives considered:** Fail the entire pipeline execution on the first finding error.
+
+**Why this one:** In a multi-finding PR scan, an failure analyzing one finding (such as a transient API error or edge-case parse issue) should not hide or cancel evaluation of other valid findings. Isolating failures ensures max visibility into security risks across the entire PR.
+
+**What would change my mind:** If an infrastructure error occurs prior to the finding processing loop (e.g., missing mandatory environment variables or git repository corruption), where failing fast at the top level is mandatory.
+
+---
+
+### 13. Prompt definition: Confidence measures Genuine Risk Probability, not reasoning self-certainty (`app/prompt_builder.py`)
+
+**Decision:** The prompt explicitly instructs the LLM that `confidence` represents how confident it is that the finding is a *GENUINE, real, exploitable secret or vulnerability* (High = real vulnerability, Low = test fixture / mock / dummy data / false positive), rather than confidence in its own internal reasoning process.
+
+**Alternatives considered:** Allow the LLM to output "High confidence" when it is 100% sure a snippet is a test fixture.
+
+**Why this one:** In early design, models could mark test fixtures with "High confidence" (meaning high certainty in their assessment that it's a test file). However, the Decision Engine matrix relies on `Confidence` as the probability of genuine risk. If a test fixture produces `(High severity, High confidence)` from the LLM, the matrix would trigger a `Block Build` action — defeating the primary purpose of SentinelCI. Defining confidence as risk probability aligns prompt outputs with matrix semantics.
+
+**What would change my mind:** If the schema were redesigned to separate `Is_False_Positive` (boolean) from `Model_Self_Certainty` (enum), which would require changing the model contracts and matrix lookup logic.
+
+---
+
+### 14. Strict single-pass context expansion cap (1 retry max) (`app/main.py`)
+
+**Decision:** When `LLMAssessment.context_sufficient == False`, SentinelCI performs `expand_context` and queries the LLM exactly once more — enforcing a hard cap of 1 retry.
+
+**Alternatives considered:** Loop until `context_sufficient == True` or a higher retry limit is reached.
+
+**Why this one:** If a code snippet remains ambiguous to the LLM even after surrounding context expansion, repeated queries are unlikely to yield new insight and risk causing CI timeouts or API rate-limit exhaustion. A single expansion pass balances context completeness against pipeline latency and resource cost.
+
+**What would change my mind:** Real audit data showing that 2-stage context expansion (e.g., expanding related files in a second pass) significantly improves assessment accuracy without causing pipeline degradation.
+
+---
+
 *(This file is appended to after each build step — not a one-time document.)*
+
