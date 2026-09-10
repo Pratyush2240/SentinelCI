@@ -31,7 +31,7 @@ DECISION_MATRIX: dict[tuple[Severity, Confidence], tuple[Action, bool]] = {
     # High Severity
     (Severity.HIGH, Confidence.HIGH): (Action.BLOCK_BUILD, False),
     (Severity.HIGH, Confidence.MEDIUM): (Action.BLOCK_BUILD, False),
-    (Severity.HIGH, Confidence.LOW): (Action.BLOCK_BUILD, True),
+    (Severity.HIGH, Confidence.LOW): (Action.MANUAL_REVIEW, True),
 
     # Medium Severity
     (Severity.MEDIUM, Confidence.HIGH): (Action.BUILD_PASS, False),

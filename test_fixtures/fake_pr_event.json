@@ -1,0 +1,22 @@
+{
+  "action": "opened",
+  "number": 1,
+  "pull_request": {
+    "number": 1,
+    "head": {
+      "sha": "0ce651a",
+      "ref": "feature-branch"
+    },
+    "base": {
+      "sha": "6de007e",
+      "ref": "main"
+    }
+  },
+  "repository": {
+    "full_name": "Pratyush2240/SentinelCI",
+    "name": "SentinelCI",
+    "owner": {
+      "login": "Pratyush2240"
+    }
+  }
+}

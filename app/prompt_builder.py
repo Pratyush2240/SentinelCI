@@ -21,6 +21,12 @@ RESPONSE_SCHEMA_INSTRUCTIONS = """RESPONSE FORMAT INSTRUCTIONS:
 Respond ONLY with a single valid JSON object matching the exact schema below.
 Do NOT include markdown code blocks (e.g. ```json), preambles, or postscript text.
 
+"confidence" measures how confident you are that this is a GENUINE, REAL, exploitable 
+secret/vulnerability — NOT how confident you are in your own reasoning or judgment. 
+If you believe this is a false positive (test fixture, dummy data, mock, safe example), 
+that belief should be reflected as LOW confidence, because you do not believe a real 
+vulnerability exists here.
+
 {
   "confidence": "high" | "medium" | "low",
   "category": "<short string label, e.g. hardcoded_secret, sql_injection>",

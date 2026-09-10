@@ -80,6 +80,38 @@ class GitOps:
         )
         return result.stdout
 
+    def get_changed_files(self, base_sha: str) -> list[str]:
+        """
+        Runs `git diff --name-only {base_sha}` as a subprocess in repo_root.
+        Returns a list of file paths that changed relative to base_sha.
+        Excludes deleted files if Git reports them (a deleted file can't be 
+        scanned by Semgrep) — filter these out by checking os.path.exists() 
+        on each returned path relative to repo_root before including it.
+        Returns an empty list if the command fails or produces no output — 
+        do not raise an exception here; let the caller (main.py) decide how 
+        to handle zero changed files.
+        """
+        result = subprocess.run(
+            ["git", "diff", "--name-only", base_sha],
+            cwd=self.repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+
+        changed_files: list[str] = []
+        for line in result.stdout.splitlines():
+            path_str = line.strip()
+            if not path_str:
+                continue
+            target_path = self.repo_root / path_str
+            if target_path.exists() and target_path.is_file():
+                changed_files.append(path_str)
+
+        return changed_files
+
     def find_related_files(self, file_path: str) -> list[str]:
         """
         PLACEHOLDER HEURISTIC:

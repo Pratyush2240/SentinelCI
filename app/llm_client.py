@@ -21,7 +21,6 @@ from app.prompt_builder import build_prompt
 # Load environment variables from .env file if present
 load_dotenv()
 
-
 def get_llm_assessment(
     finding: SemgrepFinding, context: ContextBundle
 ) -> LLMAssessment:

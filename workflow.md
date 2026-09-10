@@ -16,7 +16,7 @@ Working mode agreed with Claude: Claude gives one detailed, ready-to-run prompt 
 | 4 | `app/prompt_builder.py` | Assemble SemgrepFinding + ContextBundle into the LLM prompt string | **DONE (manually verified)** |
 | 5 | `app/llm_client.py` | Gemini Flash adapter → returns LLMAssessment | **DONE (manually verified)** |
 | 6 | `app/decision_engine.py` | Severity × Confidence matrix, override eligibility | **DONE (manually verified)** |
-| 7 | `app/main.py` | Wire 1–6 together end-to-end for one PR run | Not started |
+| 7 | `app/main.py` | Wire 1–6 together end-to-end for one PR run | **DONE (manually verified)** |
 | 8 | `.github/workflows/security-scan.yml` | CI trigger for the whole pipeline | Not started |
 | 9 | Audit Service (FastAPI + Postgres) | Persist findings, separate from the CI workflow | Not started |
 | 10 | Override workflow (`issue_comment` trigger) | Slash-command override, two independent checks | Not started |
@@ -108,5 +108,17 @@ Working mode agreed with Claude: Claude gives one detailed, ready-to-run prompt 
 
 ---
 
-*(Next entry: Step 7, app/main.py)*
+## Step 7 — `app/main.py` ✅ DONE (manually verified)
+
+**What it does:** Orchestrates the end-to-end SentinelCI pipeline run. Reads GitHub Actions environment variables (`GITHUB_EVENT_PATH`, `GITHUB_SHA`, `GITHUB_BASE_REF`), executes Semgrep CLI, extracts context, queries LLM reasoning adapter with single-retry context expansion cap when `context_sufficient=False`, evaluates policy decisions via `decision_engine`, enforces per-finding failure isolation (`try/except`), prints human-readable stdout summary, and outputs structured results to `./output/sentinelci_results.json`.
+
+**Manual verification performed:**
+- Created `test_fixtures/fake_pr_event.json` and updated `.gitignore` with `output/`.
+- Executed `python -m app.main` with `GITHUB_EVENT_PATH="test_fixtures/fake_pr_event.json"`, `GITHUB_SHA="0ce651a"`, and `GITHUB_BASE_REF="main"`.
+- Verified stdout table summary printed correctly and `output/sentinelci_results.json` was created containing full structured result.
+
+---
+
+*(Next entry: Step 8, .github/workflows/security-scan.yml)*
+
 
