@@ -19,9 +19,11 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
+from app import github_notifier
 from app.context_processing import build_initial_context, expand_context, parse_semgrep_results
 from app.decision_engine import get_decision
 from app.git_ops import GitOps
@@ -180,6 +182,20 @@ def main() -> None:
         json.dump(results, f, indent=2)
 
     print(f"\nStructured results successfully written to {results_file}")
+
+    # 5. Parse PR number from GITHUB_EVENT_PATH JSON payload
+    pr_number = event_data["pull_request"]["number"]
+
+    # Read GITHUB_TOKEN and GITHUB_REPOSITORY from os.environ (both are auto-provided by GitHub Actions when explicitly passed into the step's env)
+    github_token = os.environ.get("GITHUB_TOKEN", "")
+    github_repository = os.environ.get("GITHUB_REPOSITORY", "")
+
+    # Post or update sticky comment summarizing findings
+    github_notifier.post_or_update_comment(results, pr_number, github_repository, github_token)
+
+    # Exit with non-zero exit code if any finding requires BLOCK_BUILD action
+    if any(res.get("action") == "BLOCK_BUILD" for res in results):
+        sys.exit(1)
 
 
 if __name__ == "__main__":
