@@ -26,7 +26,6 @@ from dotenv import load_dotenv
 from app import github_notifier
 from app.context_processing import build_initial_context, expand_context, parse_semgrep_results
 from app.decision_engine import get_decision
-from app.models import Action
 from app.git_ops import GitOps
 from app.llm_client import get_llm_assessment
 
@@ -131,10 +130,6 @@ def main() -> None:
 
             # Step 2c: Evaluate policy decision from Severity x Confidence matrix
             action, override_eligible = get_decision(finding, assessment)
-
-            # TEMP TEST — remove after Step 8 verification
-            if index == 1:
-                action = Action.BLOCK_BUILD
 
             result_record = {
                 "finding_id": index,
