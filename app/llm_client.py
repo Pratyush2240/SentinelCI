@@ -96,27 +96,16 @@ def get_llm_assessment(
 
 
 if __name__ == "__main__":
-    from app.models import Severity
+    import json
+    from pathlib import Path
 
     print("=== Manual Testing: get_llm_assessment ===")
-    test_finding = SemgrepFinding(
-        rule_id="python.lang.security.audit.hardcoded-password",
-        file_path="test_secret.py",
-        start_line=1,
-        end_line=2,
-        severity=Severity.HIGH,
-        message="Hardcoded secret identified.",
-        matched_code='aws_access_key_id = "AKIAFAKEEXAMPLE12345"',
-    )
+    fixture_path = Path(__file__).resolve().parent.parent / "test_fixtures" / "sample_context.json"
+    with open(fixture_path, "r", encoding="utf-8") as f:
+        sample_data = json.load(f)
 
-    test_context = ContextBundle(
-        file_path="test_secret.py",
-        flagged_code='aws_access_key_id = "AKIAFAKEEXAMPLE12345"',
-        surrounding_lines='aws_access_key_id = "AKIAFAKEEXAMPLE12345"\naws_secret_access_key = "k3mR8pQzXvT2sLpN9wYc4hJf6eDaB1oGiUxZrWmA"',
-        enclosing_function=None,
-        nearby_comments=[],
-        is_expanded=False,
-    )
+    test_finding = SemgrepFinding(**sample_data["finding"])
+    test_context = ContextBundle(**sample_data["context"])
 
     result = get_llm_assessment(test_finding, test_context)
     print(f"\nResulting LLMAssessment:\n{result}")

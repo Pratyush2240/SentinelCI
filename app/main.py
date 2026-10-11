@@ -16,12 +16,15 @@ This module wires together all SentinelCI pipeline components:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
+from app import audit_client, github_notifier
 from app.context_processing import build_initial_context, expand_context, parse_semgrep_results
 from app.decision_engine import get_decision
 from app.git_ops import GitOps
@@ -82,6 +85,8 @@ def run_semgrep_scan(
 def main() -> None:
     """Execute the SentinelCI pipeline end-to-end for a Pull Request run."""
     # Unconditional reading of GitHub Actions environment variables
+    # (GITHUB_EVENT_PATH, GITHUB_SHA, PR_BASE_SHA, GITHUB_TOKEN, GITHUB_REPOSITORY,
+    # SENTINELCI_AUDIT_URL, SENTINELCI_AUDIT_API_KEY)
     github_event_path = os.environ["GITHUB_EVENT_PATH"]
     github_sha = os.environ["GITHUB_SHA"]
     # PR_BASE_SHA is set explicitly by the CI workflow from github.event.pull_request.base.sha — GitHub does not expose this as a default env var (unlike GITHUB_EVENT_PATH and GITHUB_SHA, which the Actions runner sets automatically).
@@ -111,6 +116,7 @@ def main() -> None:
 
     # 2. Process each finding through the SentinelCI pipeline
     for index, finding in enumerate(findings, start=1):
+        context = None
         # NOTE (FAILURE ISOLATION): Wrap per-finding processing in a try/except block
         # so an unhandled exception in processing one finding does not crash the run for others.
         try:
@@ -131,6 +137,8 @@ def main() -> None:
 
             result_record = {
                 "finding_id": index,
+                "rule_id": finding.rule_id,
+                "code": context.flagged_code,
                 "file_path": finding.file_path,
                 "start_line": finding.start_line,
                 "end_line": finding.end_line,
@@ -144,12 +152,32 @@ def main() -> None:
             }
 
         except Exception as e:
+            file_path = getattr(finding, "file_path", "unknown")
+            start_line = getattr(finding, "start_line", 0)
+            end_line = getattr(finding, "end_line", 0)
+            rule_id = getattr(finding, "rule_id", "unknown")
+
+            # If real flagged code is not available, use fallback hash
+            real_code = getattr(context, "flagged_code", "") if context else ""
+            if real_code and "requires login" not in real_code:
+                code_val = real_code
+                code_hash_val = None
+            else:
+                code_val = ""
+                # This fallback is line-number-sensitive, so an errored finding may get a new Finding ID
+                # after unrelated edits shift lines; acceptable for MVP because ERROR records are rare.
+                fallback_key = f"ERROR:{file_path}:{rule_id}:{start_line}"
+                code_hash_val = hashlib.sha256(fallback_key.encode("utf-8")).hexdigest()
+
             # Per-finding fallback error record
             result_record = {
                 "finding_id": index,
-                "file_path": getattr(finding, "file_path", "unknown"),
-                "start_line": getattr(finding, "start_line", 0),
-                "end_line": getattr(finding, "end_line", 0),
+                "rule_id": rule_id,
+                "code": code_val,
+                "code_hash": code_hash_val,
+                "file_path": file_path,
+                "start_line": start_line,
+                "end_line": end_line,
                 "severity": finding.severity.value if hasattr(finding, "severity") and hasattr(finding.severity, "value") else "UNKNOWN",
                 "confidence": None,
                 "action": "ERROR",
@@ -160,6 +188,16 @@ def main() -> None:
             }
 
         results.append(result_record)
+
+    # 2d. Persist findings to Audit Service
+    # Fail-closed design decision: Do NOT wrap log_finding in try/except.
+    # If it raises AuditError the whole job must fail immediately.
+    # Consequence: a failed audit write also means no PR comment is posted.
+    # For EVERY result (including BUILD_PASS and ERROR records, per architecture.md §8:
+    # every finding is logged regardless of severity or confidence).
+    repo = os.environ.get("GITHUB_REPOSITORY") or repo_name
+    for res in results:
+        res["finding_id"] = audit_client.log_finding(res, repo, pr_number, github_sha)
 
     # 3. Print human-readable summary to stdout
     if results:
@@ -180,6 +218,16 @@ def main() -> None:
         json.dump(results, f, indent=2)
 
     print(f"\nStructured results successfully written to {results_file}")
+
+    # 5. Parse PR number from GITHUB_EVENT_PATH JSON payload and post PR comment
+    github_token = os.environ.get("GITHUB_TOKEN", "")
+
+    # Post or update sticky comment summarizing findings
+    github_notifier.post_or_update_comment(results, pr_number, repo, github_token)
+
+    # Exit with non-zero exit code if any finding requires BLOCK_BUILD action
+    if any(res.get("action") == "BLOCK_BUILD" for res in results):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,19 @@
+{
+  "finding": {
+    "rule_id": "python.lang.security.audit.hardcoded-password",
+    "file_path": "test_secret.py",
+    "start_line": 1,
+    "end_line": 2,
+    "severity": "HIGH",
+    "message": "Hardcoded secret identified.",
+    "matched_code": "aws_access_key_id = \"AKIAFAKEEXAMPLE12345\""
+  },
+  "context": {
+    "file_path": "test_secret.py",
+    "flagged_code": "aws_access_key_id = \"AKIAFAKEEXAMPLE12345\"",
+    "surrounding_lines": "aws_access_key_id = \"AKIAFAKEEXAMPLE12345\"\naws_secret_access_key = \"k3mR8pQzXvT2sLpN9wYc4hJf6eDaB1oGiUxZrWmA\"",
+    "enclosing_function": null,
+    "nearby_comments": [],
+    "is_expanded": false
+  }
+}
