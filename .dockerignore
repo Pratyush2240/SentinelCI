@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+**/.env
+audit_service/.env
+venv
+.venv
+__pycache__
+**/__pycache__
+output/
+test_fixtures/
+test_secret*.py
+.github/
+*.md
+run_local.ps1
+app/

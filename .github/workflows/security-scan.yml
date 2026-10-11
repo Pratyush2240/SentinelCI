@@ -35,4 +35,6 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          SENTINELCI_AUDIT_URL: ${{ secrets.SENTINELCI_AUDIT_URL }}
+          SENTINELCI_AUDIT_API_KEY: ${{ secrets.SENTINELCI_AUDIT_API_KEY }}
         run: python -m app.main
